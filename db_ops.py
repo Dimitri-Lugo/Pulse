@@ -17,9 +17,55 @@ def _get_db_url() -> str:
         return os.environ.get("DATABASE_URL", "")
 
 
+# ---------------------------------------------------------------------------
+# Connection pool — reuses TCP connections across calls instead of
+# opening a fresh connection on every db_ops function invocation.
+# ---------------------------------------------------------------------------
+
+def _get_pool():
+    """Return a cached ThreadedConnectionPool (created once per process)."""
+    import streamlit as st
+    from psycopg2.pool import ThreadedConnectionPool
+
+    @st.cache_resource
+    def _build():
+        return ThreadedConnectionPool(1, 10, _get_db_url())
+
+    return _build()
+
+
+class _PooledConn:
+    """Thin wrapper that returns connections to the pool on .close()
+    so all existing db_ops code works unchanged."""
+
+    def __init__(self):
+        self._pool = _get_pool()
+        self._conn = self._pool.getconn()
+
+    # Proxy attribute / method access to the real connection
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def cursor(self, **kwargs):
+        return self._conn.cursor(**kwargs)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        """Return the connection to the pool instead of destroying it."""
+        self._pool.putconn(self._conn)
+
+    @property
+    def closed(self):
+        return self._conn.closed
+
+
 def get_connection():
-    conn = psycopg2.connect(_get_db_url())
-    return conn
+    return _PooledConn()
 
 
 def _cur(conn):

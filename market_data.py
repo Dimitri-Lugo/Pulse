@@ -91,6 +91,37 @@ def get_current_price(symbol: str) -> float | None:
         return None
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_batch_prices(symbols: tuple) -> dict:
+    """Fetch latest prices for multiple tickers in ONE API call.
+
+    Returns a dict {original_symbol: float | None}.  Dramatically faster than
+    calling get_current_price() once per ticker because yfinance.download() is
+    a single HTTP request regardless of how many symbols are requested.
+    """
+    if not symbols:
+        return {}
+    norm_map = {s: _normalize_symbol(s) for s in symbols}
+    norm_list = list(norm_map.values())
+    try:
+        raw = yf.download(norm_list, period="2d", progress=False, auto_adjust=True)
+        if raw.empty:
+            return {s: None for s in symbols}
+        close = raw["Close"]
+        if isinstance(close, pd.Series):
+            close = close.to_frame(norm_list[0])
+        result = {}
+        for orig, norm in norm_map.items():
+            try:
+                price = float(close[norm].dropna().iloc[-1])
+                result[orig] = price if price > 0 else None
+            except Exception:
+                result[orig] = None
+        return result
+    except Exception:
+        return {s: None for s in symbols}
+
+
 # ---------------------------------------------------------------------------
 # Historical OHLCV  (cached 5 min — used for charts / volatility)
 # ---------------------------------------------------------------------------
@@ -186,21 +217,31 @@ def get_weighted_correlation_series(symbols: tuple, weights: tuple) -> "pd.Serie
         roll_corr = returns.rolling(30).corr()
         valid_dates = returns.index[29:]
 
-        vals = []
-        for date in valid_dates:
-            try:
-                mat = roll_corr.loc[date].reindex(index=available, columns=available).values
-                num, den = 0.0, 0.0
-                for i in range(len(available)):
-                    for j in range(len(available)):
-                        if i != j and not np.isnan(mat[i, j]):
-                            num += w[i] * w[j] * mat[i, j]
-                            den += w[i] * w[j]
-                vals.append(num / den if den > 0 else np.nan)
-            except Exception:
-                vals.append(np.nan)
+        # Pre-compute weight outer-product matrix (zeros on diagonal)
+        w_mat = np.outer(w, w)
+        np.fill_diagonal(w_mat, 0.0)
 
-        s = pd.Series(vals, index=pd.DatetimeIndex(valid_dates)).dropna()
+        # Vectorized: unstack ticker axis → one row per date, one col per (ti, tj)
+        # then apply weight mask with numpy — no Python inner loop over tickers
+        corr_us = roll_corr.loc[valid_dates].unstack(level=-1)
+        vals_arr = np.zeros(len(valid_dates))
+        den_arr  = np.zeros(len(valid_dates))
+        n = len(available)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                try:
+                    col = corr_us[(available[i], available[j])].values.astype(float)
+                    valid = ~np.isnan(col)
+                    wij = w_mat[i, j]
+                    vals_arr += np.where(valid, wij * col, 0.0)
+                    den_arr  += np.where(valid, wij,       0.0)
+                except KeyError:
+                    pass
+
+        result = np.where(den_arr > 0, vals_arr / den_arr, np.nan)
+        s = pd.Series(result, index=pd.DatetimeIndex(valid_dates)).dropna()
         return s if not s.empty else None
     except Exception:
         return None

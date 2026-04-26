@@ -407,7 +407,8 @@ def render_dashboard():
             _total_mkt_val = 0.0
             if _pf_rows:
                 _pf_qtys = [r["amount"] for r in _pf_rows]
-                _raw_prices = [market_data.get_current_price(r["ticker"]) for r in _pf_rows]
+                _batch = market_data.get_batch_prices(tuple(r["ticker"] for r in _pf_rows))
+                _raw_prices = [_batch.get(r["ticker"]) for r in _pf_rows]
                 _pf_prices_f = [float(p) if p else 0.0 for p in _raw_prices]
                 _pf_mkt_vals = [q * p for q, p in zip(_pf_qtys, _pf_prices_f)]
                 _total_mkt_val = sum(_pf_mkt_vals)
