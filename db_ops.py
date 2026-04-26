@@ -6,10 +6,8 @@ import psycopg2.extras
 from werkzeug.security import generate_password_hash, check_password_hash
 
 
-# ── Connection ────────────────────────────────────────────────────────────────
-
+# Reads the database connection string from Streamlit secrets or falls back to an env variable
 def _get_db_url() -> str:
-    """Read DATABASE_URL from Streamlit secrets, falling back to env var."""
     try:
         import streamlit as st
         return st.secrets["DATABASE_URL"]
@@ -17,13 +15,8 @@ def _get_db_url() -> str:
         return os.environ.get("DATABASE_URL", "")
 
 
-# ---------------------------------------------------------------------------
-# Connection pool — reuses TCP connections across calls instead of
-# opening a fresh connection on every db_ops function invocation.
-# ---------------------------------------------------------------------------
-
+# Keeps a pool of up to 10 open connections to avoid opening and closing one on every single db call
 def _get_pool():
-    """Return a cached ThreadedConnectionPool (created once per process)."""
     import streamlit as st
     from psycopg2.pool import ThreadedConnectionPool
 
@@ -34,15 +27,12 @@ def _get_pool():
     return _build()
 
 
+# Wraps a pooled connection so calling .close() returns it to the pool instead of destroying it
 class _PooledConn:
-    """Thin wrapper that returns connections to the pool on .close()
-    so all existing db_ops code works unchanged."""
-
     def __init__(self):
         self._pool = _get_pool()
         self._conn = self._pool.getconn()
 
-    # Proxy attribute / method access to the real connection
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
@@ -55,8 +45,8 @@ class _PooledConn:
     def rollback(self):
         self._conn.rollback()
 
+    # Returns the connection back to the pool instead of actually closing it
     def close(self):
-        """Return the connection to the pool instead of destroying it."""
         self._pool.putconn(self._conn)
 
     @property
@@ -68,17 +58,17 @@ def get_connection():
     return _PooledConn()
 
 
+# Returns a cursor that gives back rows as dicts — row["column"] instead of row[0]
 def _cur(conn):
-    """Return a RealDictCursor so rows behave like dicts."""
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
 
-# ── Schema ────────────────────────────────────────────────────────────────────
-
+# Creates all the tables if they don't exist yet — runs every time the app starts
 def init_db():
     conn = get_connection()
     cur = _cur(conn)
 
+    # Main users table — stores login info, nickname, role, and profile picture
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -91,7 +81,7 @@ def init_db():
         )
     """)
 
-    # Idempotent column additions (safe to run on any existing schema)
+    # Adds columns that might not exist if the database was created before these columns were added
     for stmt in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname TEXT DEFAULT ''",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'User'",
@@ -99,6 +89,7 @@ def init_db():
     ]:
         cur.execute(stmt)
 
+    # Older portfolio table — not really used by the dashboard anymore but kept around just in case
     cur.execute("""
         CREATE TABLE IF NOT EXISTS portfolios (
             id SERIAL PRIMARY KEY,
@@ -108,6 +99,7 @@ def init_db():
         )
     """)
 
+    # Stores password reset tokens so users can recover their account via email
     cur.execute("""
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
             token TEXT PRIMARY KEY,
@@ -116,6 +108,7 @@ def init_db():
         )
     """)
 
+    # Stores session tokens so users stay logged in after refreshing the page
     cur.execute("""
         CREATE TABLE IF NOT EXISTS auth_tokens (
             token TEXT PRIMARY KEY,
@@ -124,6 +117,7 @@ def init_db():
         )
     """)
 
+    # The actual portfolio data — each row is one holding for one user
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_watchlists (
             id SERIAL PRIMARY KEY,
@@ -139,12 +133,12 @@ def init_db():
     conn.close()
 
 
-# ── User management ───────────────────────────────────────────────────────────
-
+# Creates a new user account, returns False if that email is already taken
 def register_user(username, password, nickname=""):
     conn = get_connection()
     cur = _cur(conn)
     hashed = generate_password_hash(password)
+    # Enforces the 12 character nickname limit
     _nick = (nickname or "").strip()[:12]
     try:
         cur.execute(
@@ -161,6 +155,7 @@ def register_user(username, password, nickname=""):
         conn.close()
 
 
+# Gets the nickname for a user to show in the top right of the dashboard
 def get_nickname(email: str) -> str:
     conn = get_connection()
     cur = _cur(conn)
@@ -183,6 +178,7 @@ def set_nickname(email: str, nickname: str) -> None:
     conn.close()
 
 
+# Gets the user's role (Owner, User, etc.) to display under their name in the profile dropdown
 def get_role(email: str) -> str:
     conn = get_connection()
     cur = _cur(conn)
@@ -202,6 +198,7 @@ def set_role(email: str, role: str) -> None:
     conn.close()
 
 
+# Pulls the profile picture bytes for display in the header and account dialog
 def get_profile_pic(email: str) -> bytes | None:
     conn = get_connection()
     cur = _cur(conn)
@@ -214,6 +211,7 @@ def get_profile_pic(email: str) -> bytes | None:
     return None
 
 
+# Saves the profile picture as raw PNG bytes in the database
 def set_profile_pic(email: str, png_bytes: bytes) -> None:
     conn = get_connection()
     cur = _cur(conn)
@@ -226,6 +224,7 @@ def set_profile_pic(email: str, png_bytes: bytes) -> None:
     conn.close()
 
 
+# Checks the password on login — handles both werkzeug and bcrypt hashed passwords
 def verify_user(username, password):
     conn = get_connection()
     cur = _cur(conn)
@@ -236,6 +235,7 @@ def verify_user(username, password):
     if not row:
         return False
     pw_hash = row["password_hash"]
+    # Bcrypt hashes start with $2b$ — handled separately with the bcrypt library
     if pw_hash.startswith(("$2b$", "$2a$", "$2y$")):
         try:
             import bcrypt
@@ -245,8 +245,7 @@ def verify_user(username, password):
     return check_password_hash(pw_hash, password)
 
 
-# ── Password reset ────────────────────────────────────────────────────────────
-
+# Saves a password reset token and cleans up any expired ones at the same time
 def store_reset_token(email: str, token: str, expires_in: int = 900):
     conn = get_connection()
     cur = _cur(conn)
@@ -263,6 +262,7 @@ def store_reset_token(email: str, token: str, expires_in: int = 900):
     conn.close()
 
 
+# Returns the email tied to a reset token if it hasn't expired yet
 def verify_reset_token(token: str):
     conn = get_connection()
     cur = _cur(conn)
@@ -276,6 +276,7 @@ def verify_reset_token(token: str):
     return row["email"] if row else None
 
 
+# Deletes the reset token after it's been used so it can't be reused
 def consume_reset_token(token: str):
     conn = get_connection()
     cur = _cur(conn)
@@ -299,8 +300,7 @@ def update_password(email: str, new_password: str) -> bool:
     return changed
 
 
-# ── Legacy portfolio (unused by dashboard, kept for compatibility) ─────────────
-
+# Not used by the main dashboard anymore but kept around just in case it's needed later
 def add_asset(user_id, ticker, amount):
     conn = get_connection()
     cur = _cur(conn)
@@ -323,12 +323,12 @@ def get_portfolio(user_id):
     return [dict(r) for r in rows]
 
 
-# ── Session-persistence auth tokens ──────────────────────────────────────────
-
+# Generates a 30-day session token and stores it so the user stays logged in after a page refresh
 def create_auth_token(email: str, expires_in: int = 30 * 24 * 3600) -> str:
     token = secrets.token_urlsafe(48)
     conn = get_connection()
     cur = _cur(conn)
+    # Cleans up expired tokens in the same call to avoid letting them pile up
     cur.execute("DELETE FROM auth_tokens WHERE expires_at < %s", (time.time(),))
     cur.execute(
         "INSERT INTO auth_tokens (token, email, expires_at) VALUES (%s, %s, %s)",
@@ -340,6 +340,7 @@ def create_auth_token(email: str, expires_in: int = 30 * 24 * 3600) -> str:
     return token
 
 
+# Checks if a session token from the cookie is still valid and returns the associated email
 def verify_auth_token(token: str) -> str | None:
     conn = get_connection()
     cur = _cur(conn)
@@ -353,6 +354,7 @@ def verify_auth_token(token: str) -> str | None:
     return row["email"] if row else None
 
 
+# Removes the session token from the database when the user explicitly logs out
 def delete_auth_token(token: str) -> None:
     conn = get_connection()
     cur = _cur(conn)
@@ -362,8 +364,7 @@ def delete_auth_token(token: str) -> None:
     conn.close()
 
 
-# ── Watchlist / Portfolio ─────────────────────────────────────────────────────
-
+# Looks up the user's integer id — needed to query the watchlist table
 def get_user_id(email: str) -> int | None:
     conn = get_connection()
     cur = _cur(conn)
@@ -395,6 +396,7 @@ def add_to_watchlist(email: str, ticker: str, amount: float) -> bool:
         conn.close()
 
 
+# Adds shares to an existing position or creates a new one if the ticker isn't in the portfolio yet
 def upsert_watchlist(email: str, ticker: str, amount: float) -> bool:
     uid = get_user_id(email)
     if uid is None:
@@ -427,6 +429,7 @@ def upsert_watchlist(email: str, ticker: str, amount: float) -> bool:
         conn.close()
 
 
+# Returns the user's full portfolio as a list of dicts with ticker and quantity
 def get_watchlist(email: str) -> list:
     uid = get_user_id(email)
     if uid is None:
@@ -458,6 +461,7 @@ def remove_from_watchlist(email: str, ticker: str) -> None:
     conn.close()
 
 
+# Replaces the entire portfolio at once — used by the manage portfolio dialog when saving changes
 def set_watchlist(email: str, entries: list) -> None:
     uid = get_user_id(email)
     if uid is None:
@@ -465,6 +469,7 @@ def set_watchlist(email: str, entries: list) -> None:
     conn = get_connection()
     cur = _cur(conn)
     try:
+        # Wipes everything first then reinserts the updated list
         cur.execute("DELETE FROM user_watchlists WHERE user_id = %s", (uid,))
         for e in entries:
             ticker = str(e.get("ticker", "") or "").upper().strip()

@@ -1,20 +1,3 @@
-"""
-market_data.py — yfinance data-fetching utilities for Pulse.
-
-Architecture note
------------------
-All network calls are isolated here so the rest of the codebase never imports
-yfinance directly.  Each function is either cached with a TTL (safe for repeated
-dashboard renders) or uncached (used only on explicit user actions such as
-ticker submission).
-
-Current public surface
-  validate_ticker(symbol)          → bool
-  get_current_price(symbol)        → float | None
-  get_price_history(symbol, period)→ pd.DataFrame | None
-  get_multi_close(symbols, period) → pd.DataFrame | None   (multi-ticker close)
-"""
-
 import math
 
 import numpy as np
@@ -23,11 +6,8 @@ import streamlit as st
 import yfinance as yf
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Known crypto base symbols that yfinance requires as SYMBOL-USD
+# yfinance needs crypto tickers formatted as BTC-USD, ETH-USD, etc.
+# I chose to maintain this list so crypto symbols get normalized automatically without any extra user input
 _CRYPTO_BASES = {
     "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","DOT","AVAX","MATIC","LTC",
     "LINK","UNI","ATOM","XLM","ALGO","VET","FIL","TRX","ETC","XMR","EOS",
@@ -38,16 +18,16 @@ _CRYPTO_BASES = {
     "SUI","APT","SEI","INJ","TIA","DYM","STRK","ARB","OP","BASE",
 }
 
+# Appends -USD to crypto tickers so yfinance can find them
 def _normalize_symbol(symbol: str) -> str:
-    """Auto-append -USD for known crypto base tickers so yfinance resolves them."""
     s = symbol.upper().strip()
     if s in _CRYPTO_BASES and not s.endswith("-USD"):
         return f"{s}-USD"
     return s
 
 
+# Makes sure the price coming back from yfinance is a valid, usable number before it gets displayed
 def _safe_price(raw) -> float | None:
-    """Convert a raw fast_info price to float, returning None on NaN / zero."""
     try:
         p = float(raw)
         return p if not math.isnan(p) and p > 0 else None
@@ -55,16 +35,9 @@ def _safe_price(raw) -> float | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Validation  (intentionally NOT cached — always fresh on user action)
-# ---------------------------------------------------------------------------
-
+# Checks if a ticker is real before allowing it to be saved to the portfolio
+# I chose not to cache this one so it always hits the live API for accuracy
 def validate_ticker(symbol: str) -> bool:
-    """Return True only if *symbol* resolves to a real, actively-traded security.
-
-    Uses fast_info.last_price which is a lightweight one-shot HTTP call.
-    Returns False for empty strings, unknown symbols, or network errors.
-    """
     if not symbol:
         return False
     try:
@@ -74,16 +47,9 @@ def validate_ticker(symbol: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Single-ticker price  (cached 60 s — suitable for dashboard renders)
-# ---------------------------------------------------------------------------
-
+# Pulls the current price for a single ticker, cached for 60 seconds
 @st.cache_data(ttl=60, show_spinner=False)
 def get_current_price(symbol: str) -> float | None:
-    """Return the latest trade price for *symbol*, or None on failure.
-
-    Cached for 60 seconds so repeated renders don't hammer the API.
-    """
     try:
         t = yf.Ticker(_normalize_symbol(symbol))
         return _safe_price(t.fast_info.last_price)
@@ -91,14 +57,10 @@ def get_current_price(symbol: str) -> float | None:
         return None
 
 
+# Fetches prices for every ticker in the portfolio in one API call instead of one per ticker
+# I chose to do it this way since it is much faster and reduces the number of network requests
 @st.cache_data(ttl=60, show_spinner=False)
 def get_batch_prices(symbols: tuple) -> dict:
-    """Fetch latest prices for multiple tickers in ONE API call.
-
-    Returns a dict {original_symbol: float | None}.  Dramatically faster than
-    calling get_current_price() once per ticker because yfinance.download() is
-    a single HTTP request regardless of how many symbols are requested.
-    """
     if not symbols:
         return {}
     norm_map = {s: _normalize_symbol(s) for s in symbols}
@@ -108,6 +70,7 @@ def get_batch_prices(symbols: tuple) -> dict:
         if raw.empty:
             return {s: None for s in symbols}
         close = raw["Close"]
+        # When only one ticker is downloaded yfinance returns a Series instead of a DataFrame
         if isinstance(close, pd.Series):
             close = close.to_frame(norm_list[0])
         result = {}
@@ -122,26 +85,9 @@ def get_batch_prices(symbols: tuple) -> dict:
         return {s: None for s in symbols}
 
 
-# ---------------------------------------------------------------------------
-# Historical OHLCV  (cached 5 min — used for charts / volatility)
-# ---------------------------------------------------------------------------
-
+# Pulls historical OHLCV data for a single ticker, cached for 5 minutes
 @st.cache_data(ttl=300, show_spinner=False)
 def get_price_history(symbol: str, period: str = "1mo") -> pd.DataFrame | None:
-    """Fetch adjusted OHLCV history for a single *symbol*.
-
-    Parameters
-    ----------
-    symbol : str
-        Ticker symbol, e.g. "AAPL".
-    period : str
-        yfinance period string: "7d", "1mo", "3mo", "1y", etc.
-
-    Returns
-    -------
-    pd.DataFrame with DatetimeIndex and columns [Open, High, Low, Close, Volume],
-    or None on failure / empty result.
-    """
     try:
         df = yf.download(_normalize_symbol(symbol), period=period, progress=False, auto_adjust=True)
         return df if not df.empty else None
@@ -149,18 +95,10 @@ def get_price_history(symbol: str, period: str = "1mo") -> pd.DataFrame | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Multi-ticker closing prices  (cached 5 min — used for correlation charts)
-# ---------------------------------------------------------------------------
-
+# Calculates 30-day annualized volatility for the volatility gauges
+# Takes the standard deviation of daily returns over the last 30 trading days and annualizes it
 @st.cache_data(ttl=300, show_spinner=False)
 def get_volatility_30d(symbol: str) -> float:
-    """Return the 30-trading-day annualised volatility as a 0–100 capped percentage.
-
-    Fetches ~2 months of daily close prices, computes daily % returns, takes the
-    std of the last 30 trading days, and annualises by sqrt(252).
-    Returns 0.0 on any failure.
-    """
     try:
         df = yf.download(_normalize_symbol(symbol), period="2mo", progress=False, auto_adjust=True)
         if df.empty or len(df) < 5:
@@ -173,26 +111,15 @@ def get_volatility_30d(symbol: str) -> float:
         return 0.0
 
 
+# Builds the correlation index line shown in the analytics graph
+# Uses a 30-day rolling window and weights each ticker pair by its share of the total portfolio value
 @st.cache_data(ttl=300, show_spinner=False)
 def get_weighted_correlation_series(symbols: tuple, weights: tuple) -> "pd.Series | None":
-    """30-day rolling weighted-average pairwise correlation for portfolio tickers.
-
-    Parameters
-    ----------
-    symbols : tuple[str, ...]
-        Ticker symbols — must be a tuple so Streamlit can hash for caching.
-    weights : tuple[float, ...]
-        Portfolio weight for each symbol (fractions that sum to 1).
-
-    Returns
-    -------
-    pd.Series indexed by date with values in [-1, 1], or None on any failure /
-    insufficient data.
-    """
     if len(symbols) < 2:
         return None
     try:
         norm_symbols = tuple(_normalize_symbol(s) for s in symbols)
+        # Pulls ~15 months of history so even the 1 Year view has enough data to display
         start = (pd.Timestamp.today() - pd.Timedelta(days=460)).strftime("%Y-%m-%d")
         raw = yf.download(list(norm_symbols), start=start, progress=False, auto_adjust=True)
         if raw.empty:
@@ -202,6 +129,7 @@ def get_weighted_correlation_series(symbols: tuple, weights: tuple) -> "pd.Serie
         if isinstance(close, pd.Series):
             close = close.to_frame(norm_symbols[0])
 
+        # Only keeps tickers that actually returned data from yfinance
         available = [s for s in norm_symbols if s in close.columns]
         if len(available) < 2:
             return None
@@ -209,20 +137,20 @@ def get_weighted_correlation_series(symbols: tuple, weights: tuple) -> "pd.Serie
         close = close[available].dropna(how="all")
         returns = close.pct_change().dropna(how="all")
 
-        # Weights aligned to the tickers that actually have data
+        # Normalizes weights to sum to 1 using only the tickers that returned data
         w = np.array([weights[norm_symbols.index(s)] for s in available], dtype=float)
         w /= w.sum()
 
-        # 30-day rolling correlation matrix (pandas MultiIndex result)
+        # Rolling 30-day correlation matrix across all trading days
         roll_corr = returns.rolling(30).corr()
         valid_dates = returns.index[29:]
 
-        # Pre-compute weight outer-product matrix (zeros on diagonal)
+        # Weight matrix for each ticker pair — diagonal zeroed out to exclude self-correlations
         w_mat = np.outer(w, w)
         np.fill_diagonal(w_mat, 0.0)
 
-        # Vectorized: unstack ticker axis → one row per date, one col per (ti, tj)
-        # then apply weight mask with numpy — no Python inner loop over tickers
+        # Computes the weighted average correlation for every date using NumPy instead of a Python loop
+        # I chose to vectorize this because the Python loop version was noticeably slow with larger portfolios
         corr_us = roll_corr.loc[valid_dates].unstack(level=-1)
         vals_arr = np.zeros(len(valid_dates))
         den_arr  = np.zeros(len(valid_dates))
@@ -247,22 +175,9 @@ def get_weighted_correlation_series(symbols: tuple, weights: tuple) -> "pd.Serie
         return None
 
 
+# Pulls closing prices for multiple tickers at once, used for multi-asset charts
 @st.cache_data(ttl=300, show_spinner=False)
 def get_multi_close(symbols: tuple, period: str = "1mo") -> pd.DataFrame | None:
-    """Fetch daily closing prices for multiple tickers in one API call.
-
-    Parameters
-    ----------
-    symbols : tuple[str, ...]
-        Ticker symbols.  A tuple (not list) is required so Streamlit can hash
-        the argument for cache keying.
-    period : str
-        yfinance period string.
-
-    Returns
-    -------
-    pd.DataFrame with DatetimeIndex and one column per symbol, or None.
-    """
     if not symbols:
         return None
     try:

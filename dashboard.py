@@ -14,6 +14,7 @@ import market_data
 import llm_utils
 
 
+# Dialog for editing quantities or removing holdings from the portfolio
 @st.dialog("Manage Portfolio")
 def pulse_manage_portfolio_dialog(email: str):
     _mgr_rows = db_ops.get_watchlist(email)
@@ -22,7 +23,7 @@ def pulse_manage_portfolio_dialog(email: str):
         return
     _mgr_prices = [market_data.get_current_price(r["ticker"]) for r in _mgr_rows]
 
-    # "Select all" checkbox — changing it forces the editor to re-initialise with the new values
+    # Toggling "Select all" forces the editor to re-initialize with fresh values
     _sel_all = st.checkbox("Select all", key="pf_mgr_sel_all")
     _mgr_df_orig = pd.DataFrame({
         "Remove": [_sel_all] * len(_mgr_rows),
@@ -75,13 +76,14 @@ def pulse_manage_portfolio_dialog(email: str):
         st.rerun()
 
 
+# Dialog for viewing account info, uploading a profile picture, or logging out
 @st.dialog("Account")
 def pulse_profile_dialog():
     un = st.session_state.get("username", "user@pulse.com")
     _role = st.session_state.get("role", "User")
     _pic_bytes = st.session_state.get("profile_pic", None)
 
-    # Show current avatar centered in dialog
+    # Shows the current avatar centered at the top of the dialog
     if _pic_bytes:
         _pic_b64 = base64.b64encode(_pic_bytes).decode()
         st.markdown(
@@ -112,7 +114,7 @@ def pulse_profile_dialog():
     st.markdown('<p style="color:#7a5a9a;font-size:0.65rem;font-family:monospace;margin:0 0 4px;letter-spacing:0.08em;">PROFILE PICTURE</p>', unsafe_allow_html=True)
     _uploaded = st.file_uploader("Choose file", type=["png", "jpg", "jpeg", "webp"], label_visibility="collapsed", key="profile_pic_upload")
     if _uploaded is not None:
-        # Only process if this is a new file we haven't saved yet
+        # Only processes if this is a new file that hasn't been saved yet
         _file_id = f"{_uploaded.name}_{_uploaded.size}"
         if _file_id != st.session_state.get("_last_pic_upload_id"):
             try:
@@ -151,6 +153,8 @@ def pulse_profile_dialog():
         st.rerun()
 
 
+# Dialog that opens when the HIGH CORRELATION alert is clicked
+# Calls the Groq LLM to generate specific diversification advice based on the current portfolio
 @st.dialog("Correlation Risk Details")
 def pulse_risk_details_dialog(correlation_index: float, top_holdings: tuple):
     st.markdown(
@@ -189,8 +193,11 @@ def pulse_risk_details_dialog(correlation_index: float, top_holdings: tuple):
     )
 
 
+# Main dashboard — wrapped in a fragment so it reruns every 60 seconds to refresh prices
+# I chose to use a fragment here so the data updates without a full page reload interrupting the user
 @st.fragment(run_every=60)
 def render_dashboard():
+    # Loads the logo and strips its black background so it renders cleanly on the dark dashboard
     _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
     if os.path.exists(_logo_path):
         img = Image.open(_logo_path).convert("RGBA")
@@ -313,13 +320,14 @@ def render_dashboard():
     </style>""", unsafe_allow_html=True)
     _uname = st.session_state.get("username", "user@pulse.com")
     _nickname = st.session_state.get("nickname", "").strip()
-    # Fall back to deriving a display name from the email if no nickname set
+    # Falls back to the email prefix if the user hasn't set a nickname yet
     if _nickname:
         _dname = _nickname
     else:
         _dname = _uname.split("@")[0].replace(".", " ").replace("_", " ").title()
     _initials = "".join([w[0].upper() for w in _dname.split()[:2]])[:2] or _dname[:1].upper()
     _disp = _dname[:12] + ".." if len(_dname) > 12 else _dname
+    # Header row — PULSE title on the left, logo in the center, profile button on the right
     hc1, hc2, hc3 = st.columns([1, 1, 1])
     with hc1:
         st.markdown('<p class="pulse-text-animate" style="color:#B026FF;font-size:2rem;font-weight:900;letter-spacing:0.28em;margin:0;padding:0.2rem 0;font-family:monospace;">PULSE</p>', unsafe_allow_html=True)
@@ -352,19 +360,19 @@ def render_dashboard():
             if st.button(_trigger, key="pulse_profile_open", type="secondary"):
                 pulse_profile_dialog()
     st.markdown('<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(157,0,255,0.5) 30%,rgba(157,0,255,0.5) 70%,transparent);margin:0.1rem 0 0.6rem;"></div>', unsafe_allow_html=True)
+    # Three-column layout — portfolio on the left, analytics in the center, risk feed on the right
     col_l, col_c, col_r = st.columns([1, 2, 1], gap="medium")
     with col_l:
         with st.container(border=True, key="pulse_portfolio_card"):
             _pf_email = st.session_state.get("username", "")
-            # ── Header row: PORTFOLIO title + pencil toggle ────────────
+            # Header row: PORTFOLIO label on the left, pencil icon to open the manage dialog on the right
             _pf_h1, _pf_h2 = st.columns([9, 1])
             with _pf_h1:
                 st.markdown('<p class="dh">PORTFOLIO</p>', unsafe_allow_html=True)
             with _pf_h2:
                 if st.button("✏️", key="pf_edit_toggle", use_container_width=True):
                     pulse_manage_portfolio_dialog(_pf_email)
-            # Clear input fields on the rerun that follows a successful submit.
-            # Must happen before the text_input widgets are instantiated.
+            # Clears the input fields after a successful ADD — must happen before the widgets render
             if st.session_state.pop("_clear_pf_inputs", False):
                 st.session_state["pt"] = ""
                 st.session_state["pa"] = ""
@@ -381,7 +389,7 @@ def render_dashboard():
                     amt = float(a_in.replace(",", ""))
                     tk = t_in.upper().strip()
                     if amt <= 0:
-                        # Allow negative only if ticker already exists with enough quantity
+                        # Negative quantities are allowed to reduce a position, as long as the user has enough shares
                         _existing = next((r for r in db_ops.get_watchlist(_pf_email) if r["ticker"] == tk), None)
                         if _existing is None:
                             st.toast("Quantity must be greater than 0 for a new position.", icon="⚠️")
@@ -399,7 +407,8 @@ def render_dashboard():
                         st.rerun()
                 except ValueError:
                     st.toast("Please enter a valid quantity.", icon="⚠️")
-            # ── Load portfolio from DB and render ─────────────────────────
+            # Loads the portfolio from the database and calculates market-value-based exposure for each holding
+            # I chose to fetch all prices in a single batch call instead of one per ticker for speed
             _pf_rows = db_ops.get_watchlist(_pf_email)
             _pf_qtys = []
             _pf_prices_f = []
@@ -410,6 +419,7 @@ def render_dashboard():
                 _batch = market_data.get_batch_prices(tuple(r["ticker"] for r in _pf_rows))
                 _raw_prices = [_batch.get(r["ticker"]) for r in _pf_rows]
                 _pf_prices_f = [float(p) if p else 0.0 for p in _raw_prices]
+                # Market value = quantity × price, Exposure = each holding's market value / total portfolio value
                 _pf_mkt_vals = [q * p for q, p in zip(_pf_qtys, _pf_prices_f)]
                 _total_mkt_val = sum(_pf_mkt_vals)
                 _pf_dict = {
@@ -447,7 +457,7 @@ def render_dashboard():
             timeframe = st.segmented_control("TF", ["7 Days", "30 Days", "90 Days", "1 Year"], default="30 Days", key="tf", label_visibility="collapsed")
             n = {"7 Days": 7, "30 Days": 30, "90 Days": 90, "1 Year": 365}.get(timeframe or "30 Days", 30)
 
-            # Build weighted-correlation inputs using market-value weights
+            # Weights each ticker by its share of the total portfolio market value for the correlation calculation
             _c_tickers, _c_weights_raw = [], []
             if _pf_rows and _total_mkt_val > 0:
                 _c_tickers = [r["ticker"] for r in _pf_rows]
@@ -459,21 +469,19 @@ def render_dashboard():
                     tuple(_c_tickers), tuple(_c_weights_raw)
                 )
 
-            # Filter series by calendar-day cutoff so all 4 timeframes map correctly
-            # (trading-day count != n, so iloc[-n:] would fail for "1 Year")
+            # Slices the series to the last n trading days so the timeframe selector works correctly
             if _corr_series is not None and not _corr_series.empty:
-                # iloc[-n:] gives exactly the last n trading days for all timeframes;
-                # safely returns all available rows when fewer than n exist (e.g. 1 Year)
+                # iloc[-n:] gives exactly the last n trading days — safely returns all rows if fewer than n exist
                 _plot = _corr_series.iloc[-n:]
                 corr = np.clip(_plot.values.astype(float), -1.0, 1.0)
-                # Full date strings keep each trading day unique (no staircase artefact)
+                # Full date strings keep each trading day unique on the x-axis
                 x_labels = _plot.index.strftime("%b %d '%y" if n >= 90 else "%b %d").tolist()
                 _step = max(1, len(x_labels) // 6)
                 tick_vals = x_labels[::_step]
-                # For longer views show clean "Mon 'YY" on the ~6 evenly-spaced ticks
+                # For longer views, shows a cleaner "Mon 'YY" format on the tick labels
                 tick_text = [_plot.index[i].strftime("%b '%y") for i in range(0, len(x_labels), _step)] if n >= 90 else tick_vals
             else:
-                # Fallback: flat neutral line when < 2 tickers or insufficient history
+                # Flat neutral line as a fallback when there are fewer than 2 tickers or not enough history
                 corr = np.full(n, 0.0)
                 if n <= 30:
                     x_labels = [f"Day {i+1}" for i in range(n)]
@@ -490,7 +498,7 @@ def render_dashboard():
                 font=dict(color="#B026FF", family="monospace", size=11),
                 margin=dict(l=44, r=12, t=8, b=52),
                 xaxis=dict(gridcolor="#0d001c", zeroline=False, tickfont=dict(size=10, color="#B026FF"), tickvals=tick_vals, ticktext=tick_text, title=dict(text="")),
-                yaxis=dict(gridcolor="#0d001c", zeroline=False, range=[0, 1.12], tickvals=[0.1, 0.4, 0.7, 1.0], ticktext=["0.1", "0.4", "0.7", "1.0"], tickfont=dict(size=10, color="#B026FF"), title=dict(text="Correlation Index", font=dict(size=12, color="#B026FF"))),
+                yaxis=dict(gridcolor="#0d001c", zeroline=True, zerolinecolor="#2a1545", zerolinewidth=1, range=[-1.0, 1.12], tickvals=[-1.0, -0.5, 0.0, 0.5, 0.7, 1.0], ticktext=["-1.0", "-0.5", "0.0", "0.5", "0.7", "1.0"], tickfont=dict(size=10, color="#B026FF"), title=dict(text="Correlation Index", font=dict(size=12, color="#B026FF"))),
                 showlegend=False, height=451, dragmode=False,
                 shapes=[dict(type="line", x0=x_labels[0], x1=x_labels[-1], y0=0.7, y1=0.7, line=dict(color="#FF007F", width=1.2, dash="dot"))],
                 annotations=[dict(text="Time", x=0.47, y=-0.13, xref="paper", yref="paper", showarrow=False, font=dict(size=12, color="#B026FF", family="monospace"))],
@@ -502,7 +510,7 @@ def render_dashboard():
             _rf_hdr.add_annotation(text="RISK ALERT FEED", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False, xanchor="center", yanchor="middle", font=dict(color="#B026FF", size=18, family="monospace"))
             _rf_hdr.update_layout(paper_bgcolor="#000000", height=30, margin=dict(t=0, b=0, l=0, r=0), xaxis=dict(visible=False), yaxis=dict(visible=False))
             st.plotly_chart(_rf_hdr, use_container_width=True, config={"displayModeBar": False, "staticPlot": True}, key="pulse_rf_hdr")
-            # ── Dynamic Risk Alert Feed ───────────────────────────────────────
+            # Compares the most recent correlation value against the 0.70 threshold to decide which alert to show
             _CORR_THRESHOLD = 0.70
             _latest_corr = float(corr[-1]) if corr is not None and len(corr) > 0 else 0.0
 
@@ -534,7 +542,7 @@ def render_dashboard():
                         unsafe_allow_html=True,
                     )
             else:
-                # Extract top holdings for context labels and LLM
+                # Grabs the top 5 holdings by exposure to use in the alert label and pass to the LLM
                 _top_holdings = tuple()
                 if not df_p.empty:
                     _th = df_p[["Ticker", "Exposure"]].head(5)
@@ -560,7 +568,9 @@ def render_dashboard():
             _hdr.update_layout(paper_bgcolor="#000000", height=26, margin=dict(t=0, b=0, l=0, r=0), xaxis=dict(visible=False), yaxis=dict(visible=False))
             st.plotly_chart(_hdr, use_container_width=True, config={"displayModeBar": False, "staticPlot": True}, key="pulse_vol_hdr")
 
+            # Builds a semicircle volatility gauge with a custom needle overlay
             def _gauge(val, title, subtext):
+                # Maps each 10-point band to a color from deep purple → red to show rising risk
                 _gradient = ["#280060","#3d0090","#5500aa","#6e00b8","#820099","#960075","#aa0050","#c00030","#d80015","#f00005"]
                 _steps = []
                 for _i in range(10):
@@ -574,12 +584,12 @@ def render_dashboard():
                         _steps.append({"range": [_lo, _hi], "color": "#0a0018"})
                 _c = _gradient[min(int(val // 10), 9)]
 
-                # Needle geometry — cartesian (x=0,y=0) is the gauge pivot (bottom-center of arc)
-                # scaleanchor="y" ensures equal pixel scale so angle is geometrically accurate
+                # Needle geometry — (x=0, y=0) is the gauge pivot at the bottom center of the arc
+                # scaleanchor="y" keeps the pixel scale equal so the angle stays geometrically accurate
                 _ang = math.radians(180.0 - (val / 100.0) * 180.0)
                 _perp = _ang + math.pi / 2.0
-                _nr = 0.88   # needle tip radius — calibrated to reach gauge outer arc
-                _bw = 0.033  # half-width of needle base
+                _nr = 0.88   # Needle tip radius — calibrated to reach the outer gauge arc
+                _bw = 0.033  # Half-width of the needle base
                 _nx = [_bw * math.cos(_perp), _nr * math.cos(_ang), -_bw * math.cos(_perp), _bw * math.cos(_perp)]
                 _ny = [_bw * math.sin(_perp), _nr * math.sin(_ang), -_bw * math.sin(_perp), _bw * math.sin(_perp)]
 
@@ -602,7 +612,7 @@ def render_dashboard():
                         "threshold": {"line": {"color": "#ffffff", "width": 4}, "thickness": 0.88, "value": val},
                     },
                 ))
-                # Needle: filled triangle pointing from pivot to arc
+                # Needle drawn as a filled triangle pointing from the pivot hub to the arc
                 fig.add_trace(go.Scatter(
                     x=_nx, y=_ny, fill="toself",
                     fillcolor="rgba(255,255,255,0.88)",
@@ -610,7 +620,7 @@ def render_dashboard():
                     mode="lines", showlegend=False, hoverinfo="skip",
                     xaxis="x", yaxis="y",
                 ))
-                # Pivot hub dot
+                # Small white circle at the pivot center so the needle looks properly anchored
                 fig.add_trace(go.Scatter(
                     x=[0], y=[0], mode="markers",
                     marker=dict(color="white", size=6, symbol="circle"),
@@ -621,9 +631,9 @@ def render_dashboard():
                     paper_bgcolor="#000000", height=(153 if _latest_corr < _CORR_THRESHOLD else 155),
                     margin=dict(t=1, b=1, l=8, r=8),
                     font=dict(family="monospace"),
-                    # Cartesian axes for the needle overlay; scaleanchor ensures correct angle at any width
+                    # Cartesian axes for the needle overlay — scaleanchor keeps the angle correct at any container width
                     xaxis=dict(visible=False, range=[-1, 1], domain=[0, 1], scaleanchor="y", scaleratio=1),
-                    # y=0 → gauge pivot; lowered range so pivot aligns with actual gauge arc centre
+                    # y=0 is the gauge pivot — range is lowered so the pivot lines up with the actual arc center
                     yaxis=dict(visible=False, range=[-0.10, 0.95], domain=[0.13, 0.87]),
                     annotations=[
                         dict(text=title, x=0.5, y=1.04, xref="paper", yref="paper", showarrow=False, xanchor="center", yanchor="top", font=dict(color="#B026FF", size=13, family="monospace")),
@@ -632,7 +642,7 @@ def render_dashboard():
                 )
                 return fig
 
-            # Top-2 tickers by % Alloc (df_p already sorted descending)
+            # Grabs the top 2 tickers by Exposure to show their 30-day volatility — df_p is already sorted descending
             _v_top2 = df_p["Ticker"].head(2).tolist() if not df_p.empty else []
             _gauge_specs = []
             for _vt in _v_top2:

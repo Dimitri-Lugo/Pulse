@@ -9,6 +9,8 @@ import resend
 from datetime import datetime, timedelta
 from cookie_utils import get_cookie_manager
 
+# Builds and sends the password reset email using the Resend API
+# Embeds the logo as base64 so it shows up inline without needing a hosted image URL
 def send_recovery_email(target_email: str, reset_token: str) -> tuple[bool, str]:
     subject = "Pulse Risk Intelligence Platform - Password Reset"
     username = target_email.split("@")[0].replace(".", " ").replace("_", " ").title()
@@ -453,23 +455,20 @@ html body .stApp [class*="st-key-pulse_portfolio_card"] [data-baseweb="input"] i
 </style>
 """, unsafe_allow_html=True)
 
+# Sets up all the database tables on startup — safe to call every time due to IF NOT EXISTS
 db_ops.init_db()
 
-# Initialise the cookie manager (renders its component on every script run).
+# Renders the cookie manager component on every rerun so the app can read and write browser cookies
 cookie_manager = get_cookie_manager()
 
-# On a fresh page load the CookieManager component returns its default ({})
-# on the very first script execution, then asynchronously sends the real
-# cookie dict from the browser.  We call st.stop() (not st.rerun()) so
-# nothing is rendered on this run; the component stays in the DOM and
-# triggers Streamlit's own automatic rerun once it has read the browser's
-# cookie store.  The login page is never rendered before we know the real
-# cookie state, preventing any flash of the login screen on refresh.
+# On the very first script run the cookie manager hasn't read the browser yet and returns {}
+# Stops here so Streamlit reruns immediately once the real cookie data comes back from the browser
+# This prevents the login screen from flashing before the app knows the user's cookie state
 if not st.session_state.get("_cookie_checked"):
     st.session_state["_cookie_checked"] = True
     st.stop()
 
-# ── Deferred cookie write: set after a successful login rerun ─────────────
+# Writes the auth token cookie on the rerun after a successful login, not during the login itself
 _pending_set = st.session_state.pop("_pending_token_set", None)
 if _pending_set:
     cookie_manager.set(
@@ -479,7 +478,7 @@ if _pending_set:
         expires_at=datetime.now() + timedelta(days=30),
     )
 
-# ── Deferred email remember: store email for login form pre-fill ──────────
+# Saves the email to a cookie so the login form is pre-filled on future visits when "Remember me" was checked
 _pending_email = st.session_state.pop("_pending_email_remember", None)
 if _pending_email:
     cookie_manager.set(
@@ -489,11 +488,11 @@ if _pending_email:
         expires_at=datetime.now() + timedelta(days=365),
     )
 
-# ── Deferred cookie delete: set after an explicit logout rerun ───────────
+# Deletes the auth token cookie on the rerun after logout so the session is fully cleared
 if st.session_state.pop("_pending_cookie_delete", False):
     cookie_manager.delete("pulse_auth_token")
 
-# ── Auto-login via persisted token ───────────────────────────────────────
+# Checks if there's a saved session cookie and logs the user in automatically without showing the login screen
 if not st.session_state.get("authenticated"):
     _stored_token = cookie_manager.get("pulse_auth_token")
     if _stored_token:
@@ -509,15 +508,14 @@ if not st.session_state.get("authenticated"):
 if "username" not in st.session_state:
     st.session_state["username"] = ""
 
-# ── Pre-fill email from "Remember me" cookie ─────────────────────────────
-# Must happen before the text_input(key="username") widget renders.
-# Only fills if username is currently blank (respects user edits and
-# same-session state where the value is already correct).
+# Pre-fills the email field from the "Remember me" cookie before the widget renders
+# Only runs if the field is currently blank — won't overwrite anything the user typed
 if not st.session_state.get("authenticated") and not st.session_state.get("username"):
     _rem = cookie_manager.get("pulse_remembered_email")
     if _rem:
         st.session_state["username"] = _rem
 
+# Loads the logo to embed it inline in the login page header
 _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
 if os.path.exists(_logo_path):
     with open(_logo_path, "rb") as _f:
@@ -526,6 +524,7 @@ if os.path.exists(_logo_path):
 else:
     _logo_html = '<div class="logo-aura-wrap"><div class="logo-aura"></div><div class="logo-box">P</div></div>'
 
+# Sets up all the session state variables before any widgets are rendered
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 if "current_page" not in st.session_state:
@@ -538,6 +537,8 @@ if "_reset_email" not in st.session_state:
     st.session_state["_reset_email"] = ""
 if "_pending_success" not in st.session_state:
     st.session_state["_pending_success"] = ""
+# Checks the URL for special query params — the forgot password link sets ?forgot=1
+# and the reset email link includes ?token=...&email=...
 if st.query_params.get("forgot") == "1":
     st.query_params.clear()
     st.session_state["current_page"] = "forgot_password"
@@ -555,10 +556,12 @@ elif "token" in st.query_params and "email" in st.query_params:
     st.query_params.clear()
     st.rerun()
 
+# If the user is already logged in, skips the login page and goes straight to the dashboard
 if st.session_state["authenticated"]:
     dashboard.render_dashboard()
     st.stop()
 
+# Everything below this point is the login / register / password reset UI
 with st.container():
     st.markdown(f'<div class="logo-wrap">{_logo_html}</div>', unsafe_allow_html=True)
     st.markdown('<p class="pulse-title">PULSE</p>', unsafe_allow_html=True)
@@ -693,11 +696,9 @@ with st.container():
                     st.session_state["nickname"] = db_ops.get_nickname(username.strip())
                     st.session_state["role"] = db_ops.get_role(username.strip())
                     st.session_state["profile_pic"] = db_ops.get_profile_pic(username.strip())
-                    # Always persist the token cookie so refresh keeps the user
-                    # logged in until they explicitly log out.
+                    # Always saves the token cookie so the user stays logged in after a page refresh
                     st.session_state["_pending_token_set"] = _token
-                    # If "Remember me" is checked, also persist the email so
-                    # the login form is pre-filled on future visits.
+                    # If "Remember me" is checked, also saves the email so the login form is pre-filled next time
                     if st.session_state.get("remember_me"):
                         st.session_state["_pending_email_remember"] = username.strip()
                     st.rerun()

@@ -1,39 +1,18 @@
-"""
-llm_utils.py — LLM-powered portfolio advice for Pulse.
-
-Add your Groq API key to .streamlit/secrets.toml:
-    GROQ_API_KEY = "gsk_..."
-
-Get a free key (6,000 req/day) at https://console.groq.com
-"""
-
 import streamlit as st
 
 
+# Caches the response for 5 minutes to avoid hitting the API on every rerun
 @st.cache_data(ttl=300, show_spinner=False)
 def get_diversification_advice(api_key: str, correlation_index: float, top_holdings: tuple) -> str:
-    """Generate diversification recommendations via Groq (llama-3.3-70b).
-
-    Parameters
-    ----------
-    api_key : str
-        Groq API key — passed in so st.secrets is read outside the cache boundary.
-    correlation_index : float
-        Most recent weighted pairwise correlation index (0–1).
-    top_holdings : tuple[tuple[str, float], ...]
-        (ticker, alloc_pct) pairs sorted by allocation descending.
-
-    Returns
-    -------
-    str — formatted advice, or a user-friendly error message.
-    """
     if not api_key:
         return "GROQ_API_KEY not set in .streamlit/secrets.toml."
 
+    # Formats the holdings into a readable string for the prompt
     holdings_str = ", ".join(
         f"{ticker} ({alloc:.1f}%)" for ticker, alloc in top_holdings
     )
 
+    # Builds the prompt — I chose to keep it short and specific so the model stays on topic
     prompt = (
         f"You are a concise portfolio risk advisor.\n\n"
         f"A user's portfolio has a 30-day weighted pairwise correlation index of "
@@ -57,6 +36,7 @@ def get_diversification_advice(api_key: str, correlation_index: float, top_holdi
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
+        # Returns something readable to the user instead of a raw stack trace
         err = str(e)
         if "429" in err or "rate" in err.lower():
             return "Daily request limit reached. Try again tomorrow or upgrade your Groq plan."
