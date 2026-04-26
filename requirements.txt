@@ -1,0 +1,13 @@
+streamlit==1.55.0
+psycopg2-binary
+plotly==6.6.0
+pandas==2.3.3
+numpy
+pillow==12.1.1
+werkzeug==3.1.6
+resend==2.25.0
+bcrypt==5.0.0
+extra-streamlit-components
+yfinance
+google-genai
+groq

@@ -6,7 +6,8 @@ import os
 import re
 import secrets as _secrets
 import resend
-from streamlit_cookies_controller import CookieController
+from datetime import datetime, timedelta
+from cookie_utils import get_cookie_manager
 
 def send_recovery_email(target_email: str, reset_token: str) -> tuple[bool, str]:
     subject = "Pulse Risk Intelligence Platform - Password Reset"
@@ -358,63 +359,164 @@ button[kind="tertiary"]:hover,
     font-size: 0.65rem; color: #8a6aaa; letter-spacing: 0.08em;
     pointer-events: none;
 }
+/* ── HIGH alert card button ───────────────────────────────────────────────── */
+html body .stApp [class*="st-key-btn_rf_high"] button {
+    background: rgba(255,0,127,0.06) !important;
+    border: 1px solid #FF007F !important;
+    border-left: 3px solid #FF007F !important;
+    border-radius: 6px !important;
+    padding: 11px 14px !important;
+    width: 108% !important;
+    min-height: 62px !important;
+    height: auto !important;
+    text-align: left !important;
+    box-shadow: 0 0 10px rgba(255,0,127,0.15) !important;
+    cursor: pointer !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 3px !important;
+    white-space: normal !important;
+    overflow: visible !important;
+}
+html body .stApp [class*="st-key-btn_rf_high"] button:hover {
+    background: rgba(255,0,127,0.12) !important;
+    box-shadow: 0 0 18px rgba(255,0,127,0.28) !important;
+}
+html body .stApp [class*="st-key-btn_rf_high"] button p {
+    color: #FF007F !important;
+    font-family: monospace !important;
+    font-size: 0.65rem !important;
+    text-align: left !important;
+    margin: 0 !important;
+    line-height: 1.3 !important;
+    font-weight: 500 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+}
+html body .stApp [class*="st-key-btn_rf_high"] button p:first-of-type::before {
+    content: "HIGH";
+    background: #FF007F;
+    color: #fff;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.60rem;
+    margin-right: 7px;
+    vertical-align: middle;
+    letter-spacing: 0.05em;
+}
+html body .stApp [class*="st-key-btn_rf_high"] button p:last-of-type {
+    color: #a04060 !important;
+    font-size: 0.58rem !important;
+    font-weight: 400 !important;
+    letter-spacing: 0.02em !important;
+}
+/* Hide browser-native password reveal button (Edge / Chrome) */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear,
+input[type="password"]::-webkit-credentials-auto-fill-button {
+    display: none !important;
+}
+/* Disable text selection globally except in inputs / textareas */
+body, .stApp, [data-testid="stAppViewContainer"] {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+}
+input, textarea, [contenteditable="true"] {
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+    user-select: text !important;
+}
+/* Portfolio form — Ticker & Shares/Tokens placeholder colour */
+html body .stApp [class*="st-key-pulse_portfolio_card"] input::placeholder {color:#A99BB8 !important;opacity:1 !important;}
+html body .stApp [class*="st-key-pulse_portfolio_card"] input::-webkit-input-placeholder {color:#A99BB8 !important;opacity:1 !important;}
+html body .stApp [class*="st-key-pulse_portfolio_card"] input::-moz-placeholder {color:#A99BB8 !important;opacity:1 !important;}
+html body .stApp [class*="st-key-pulse_portfolio_card"] input:-ms-input-placeholder {color:#A99BB8 !important;opacity:1 !important;}
+html body .stApp [class*="st-key-pulse_portfolio_card"] [data-baseweb="input"] input::placeholder {color:#A99BB8 !important;opacity:1 !important;}
+/* Suppress Streamlit's stale-content fade during fragment auto-reruns */
+[data-stale="true"], [data-stale] {
+    opacity: 1 !important;
+    transition: none !important;
+}
+.stApp.running [data-testid="stMain"],
+.stApp.running [data-testid="stAppViewContainer"],
+.stApp.running [data-testid="stMainBlockContainer"],
+.stApp.running [data-testid="block-container"] {
+    opacity: 1 !important;
+    transition: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 db_ops.init_db()
 
-cookies = CookieController()
+# Initialise the cookie manager (renders its component on every script run).
+cookie_manager = get_cookie_manager()
 
-try:
-    _raw_email = cookies.get("pulse_email")
-    _raw_password = cookies.get("pulse_password")
-    _cookies_ready = True
-except TypeError:
-    _raw_email = None
-    _raw_password = None
-    _cookies_ready = False
+# On a fresh page load the CookieManager component returns its default ({})
+# on the very first script execution, then asynchronously sends the real
+# cookie dict from the browser.  We call st.stop() (not st.rerun()) so
+# nothing is rendered on this run; the component stays in the DOM and
+# triggers Streamlit's own automatic rerun once it has read the browser's
+# cookie store.  The login page is never rendered before we know the real
+# cookie state, preventing any flash of the login screen on refresh.
+if not st.session_state.get("_cookie_checked"):
+    st.session_state["_cookie_checked"] = True
+    st.stop()
 
-if _cookies_ready:
-    _pcw = st.session_state.get("_pending_cookie_write")
-    if _pcw:
-        cookies.set("pulse_email", _pcw["email"])
-        cookies.set("pulse_password", _pcw["password"])
-        del st.session_state["_pending_cookie_write"]
-    _pcr = st.session_state.get("_pending_cookie_remove")
-    if _pcr:
-        try:
-            cookies.remove("pulse_email")
-        except Exception:
-            pass
-        try:
-            cookies.remove("pulse_password")
-        except Exception:
-            pass
-        del st.session_state["_pending_cookie_remove"]
+# ── Deferred cookie write: set after a successful login rerun ─────────────
+_pending_set = st.session_state.pop("_pending_token_set", None)
+if _pending_set:
+    cookie_manager.set(
+        "pulse_auth_token",
+        _pending_set,
+        key="set_token",
+        expires_at=datetime.now() + timedelta(days=30),
+    )
 
-if not st.session_state.get("_hydrated"):
-    if _raw_email:
-        st.session_state["_hydrated"] = True
-        st.session_state["_cookie_email"] = _raw_email
-        st.session_state["_cookie_password"] = _raw_password or ""
-        st.session_state["username"] = _raw_email
-        st.session_state["password"] = _raw_password or ""
-    elif _cookies_ready:
-        _nc = st.session_state.get("_null_count", 0) + 1
-        st.session_state["_null_count"] = _nc
-        if _nc >= 5:
-            st.session_state["_hydrated"] = True
-            st.session_state["_cookie_email"] = ""
-            st.session_state["_cookie_password"] = ""
-        else:
-            st.rerun()
+# ── Deferred email remember: store email for login form pre-fill ──────────
+_pending_email = st.session_state.pop("_pending_email_remember", None)
+if _pending_email:
+    cookie_manager.set(
+        "pulse_remembered_email",
+        _pending_email,
+        key="set_email",
+        expires_at=datetime.now() + timedelta(days=365),
+    )
 
-_saved_email = st.session_state.get("_cookie_email", "")
-_saved_password = st.session_state.get("_cookie_password", "")
+# ── Deferred cookie delete: set after an explicit logout rerun ───────────
+if st.session_state.pop("_pending_cookie_delete", False):
+    cookie_manager.delete("pulse_auth_token")
+
+# ── Auto-login via persisted token ───────────────────────────────────────
+if not st.session_state.get("authenticated"):
+    _stored_token = cookie_manager.get("pulse_auth_token")
+    if _stored_token:
+        _token_email = db_ops.verify_auth_token(_stored_token)
+        if _token_email:
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = _token_email
+            st.session_state["_auth_token"] = _stored_token
+            st.session_state["nickname"] = db_ops.get_nickname(_token_email)
+            st.session_state["role"] = db_ops.get_role(_token_email)
+            st.session_state["profile_pic"] = db_ops.get_profile_pic(_token_email)
+
 if "username" not in st.session_state:
-    st.session_state["username"] = _saved_email
-if "password" not in st.session_state:
-    st.session_state["password"] = _saved_password
+    st.session_state["username"] = ""
+
+# ── Pre-fill email from "Remember me" cookie ─────────────────────────────
+# Must happen before the text_input(key="username") widget renders.
+# Only fills if username is currently blank (respects user edits and
+# same-session state where the value is already correct).
+if not st.session_state.get("authenticated") and not st.session_state.get("username"):
+    _rem = cookie_manager.get("pulse_remembered_email")
+    if _rem:
+        st.session_state["username"] = _rem
 
 _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
 if os.path.exists(_logo_path):
@@ -429,7 +531,7 @@ if "authenticated" not in st.session_state:
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "login"
 if "remember_me" not in st.session_state:
-    st.session_state["remember_me"] = bool(_saved_email)
+    st.session_state["remember_me"] = bool(st.session_state.get("_auth_token"))
 if "_reset_token" not in st.session_state:
     st.session_state["_reset_token"] = ""
 if "_reset_email" not in st.session_state:
@@ -538,6 +640,9 @@ with st.container():
                 st.session_state["current_page"] = "login"
                 st.rerun()
     else:
+        if st.session_state["current_page"] == "register":
+            st.markdown('<span class="input-label">NICKNAME</span>', unsafe_allow_html=True)
+            reg_nickname = st.text_input("nickname", placeholder="Up to 12 characters", key="reg_nickname", label_visibility="collapsed", max_chars=12)
         st.markdown('<span class="input-label">EMAIL</span>', unsafe_allow_html=True)
         username = st.text_input("email", placeholder="you@example.com", key="username", label_visibility="collapsed")
         st.markdown('<span class="input-label">PASSWORD</span>', unsafe_allow_html=True)
@@ -564,11 +669,14 @@ with st.container():
         st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
         if st.session_state["current_page"] == "register":
             if st.button("REGISTER", use_container_width=True, type="primary", key="btn_register"):
+                _nick_val = st.session_state.get("reg_nickname", "").strip()
                 if not username or not password:
                     st.error("Please fill in all fields.")
+                elif not _nick_val:
+                    st.error("Please choose a nickname.")
                 elif len(password) < 6:
                     st.error("Password must be at least 6 characters.")
-                elif db_ops.register_user(username.strip(), password):
+                elif db_ops.register_user(username.strip(), password, _nick_val):
                     st.success("Account created successfully. Please sign in.")
                     st.session_state["current_page"] = "login"
                     st.rerun()
@@ -579,15 +687,19 @@ with st.container():
                 if not username or not password:
                     st.error("Please enter your email and password.")
                 elif db_ops.verify_user(username.strip(), password):
+                    _token = db_ops.create_auth_token(username.strip())
                     st.session_state["authenticated"] = True
-                    if st.session_state["remember_me"]:
-                        st.session_state["_pending_cookie_write"] = {"email": username.strip(), "password": password}
-                        st.session_state["_cookie_email"] = username.strip()
-                        st.session_state["_cookie_password"] = password
-                    else:
-                        st.session_state["_pending_cookie_remove"] = True
-                        st.session_state["_cookie_email"] = ""
-                        st.session_state["_cookie_password"] = ""
+                    st.session_state["_auth_token"] = _token
+                    st.session_state["nickname"] = db_ops.get_nickname(username.strip())
+                    st.session_state["role"] = db_ops.get_role(username.strip())
+                    st.session_state["profile_pic"] = db_ops.get_profile_pic(username.strip())
+                    # Always persist the token cookie so refresh keeps the user
+                    # logged in until they explicitly log out.
+                    st.session_state["_pending_token_set"] = _token
+                    # If "Remember me" is checked, also persist the email so
+                    # the login form is pre-filled on future visits.
+                    if st.session_state.get("remember_me"):
+                        st.session_state["_pending_email_remember"] = username.strip()
                     st.rerun()
                 else:
                     st.error("Invalid email or password.")

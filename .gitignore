@@ -1,0 +1,6 @@
+*.db
+venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+.cursorrules
