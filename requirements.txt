@@ -9,5 +9,4 @@ resend==2.25.0
 bcrypt==5.0.0
 extra-streamlit-components
 yfinance
-google-genai
 groq
