@@ -2,8 +2,6 @@
 
 Pulse is a real-time portfolio risk analytics dashboard built with Python and Streamlit. It allows users to track their holdings, monitor asset correlations, visualize 30-day volatility, and receive AI-generated diversification advice when portfolio risk is elevated.
 
----
-
 ## Features
 
 ### Portfolio Management
@@ -18,7 +16,7 @@ Pulse is a real-time portfolio risk analytics dashboard built with Python and St
 - Plots a 30-day rolling weighted-average pairwise correlation index across all portfolio holdings
 - Weights are proportional to each asset's current market value
 - Timeframe selector: 7 Days, 30 Days, 90 Days, 1 Year
-- Pink dotted threshold line at 0.70 — the level at which a HIGH correlation alert is triggered
+- Pink dotted threshold line at 0.70, which is the level at which a HIGH correlation alert is triggered
 - Y-axis spans -1.0 to 1.0 to correctly display negatively correlated portfolios
 
 ### Volatility Gauges
@@ -38,8 +36,6 @@ Pulse is a real-time portfolio risk analytics dashboard built with Python and St
 - Profile picture upload with automatic square crop, resize to 256×256, and circular mask
 - Password reset via email (Resend API)
 
----
-
 ## Tech Stack
 
 | Layer | Technology |
@@ -56,13 +52,11 @@ Pulse is a real-time portfolio risk analytics dashboard built with Python and St
 | Email | Resend API |
 | Hosting | Streamlit Community Cloud |
 
----
-
 ## Project Structure
 
 ```
 Pulse/
-├── app.py              # Entry point — page config, global CSS, auth flow
+├── app.py              # Entry point: page config, global CSS, auth flow
 ├── dashboard.py        # Main dashboard UI and all rendering logic
 ├── db_ops.py           # All PostgreSQL database operations
 ├── market_data.py      # yfinance data-fetching utilities (prices, volatility, correlation)
@@ -72,8 +66,6 @@ Pulse/
 └── .streamlit/
     └── secrets.toml    # API keys and database URL (not committed)
 ```
-
----
 
 ## Local Development Setup
 
@@ -112,8 +104,6 @@ EMAIL_PASSWORD = "..."
 streamlit run app.py
 ```
 
----
-
 ## Deployment (Streamlit Community Cloud)
 
 1. Push the repository to GitHub
@@ -124,8 +114,6 @@ streamlit run app.py
 5. Click **Deploy**
 
 The database schema is initialised automatically on first run via `db_ops.init_db()`.
-
----
 
 ## Key Calculations
 
